@@ -2,5 +2,5 @@ spec_version: 1
 name: email_triage
 type: space
 runtime: fastapi
-app: server.app:main
+app: server.main:main
 port: 7860
