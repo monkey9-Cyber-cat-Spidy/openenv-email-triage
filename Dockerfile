@@ -16,4 +16,4 @@ COPY --chown=user . .
 EXPOSE 7860
 
 # Default command starts the API server for OpenEnv
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"]
+CMD ["python", "-m", "server.app"]
