@@ -1,3 +1,12 @@
+---
+title: OpenEnv Email Triage
+emoji: 📧
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+pinned: false
+---
+
 # Email Triage OpenEnv Environment
 
 ## Environment Overview and Motivation
