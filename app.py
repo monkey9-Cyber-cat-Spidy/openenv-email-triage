@@ -2,8 +2,8 @@ from openenv.core.env_server.http_server import create_app
 from models import EmailTriageAction, EmailTriageObservation
 from env import EmailTriageEnvironment
 
-# Create the app with web interface
-app = create_app(
+# Create the FastAPI application
+_app = create_app(
     EmailTriageEnvironment,
     EmailTriageAction,
     EmailTriageObservation,
