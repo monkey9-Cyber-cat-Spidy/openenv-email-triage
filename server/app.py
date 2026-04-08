@@ -11,14 +11,14 @@ import uvicorn
 
 
 def main():
-    _app = create_app(
+    _application = create_app(
         EmailTriageEnvironment,
         EmailTriageAction,
         EmailTriageObservation,
         env_name="email_triage",
         max_concurrent_envs=10
     )
-    uvicorn.run(_app, host="0.0.0.0", port=7860)
+    uvicorn.run(_application, host="0.0.0.0", port=7860)
 
 
 if __name__ == "__main__":
