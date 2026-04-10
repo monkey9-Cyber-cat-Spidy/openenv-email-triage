@@ -1,6 +1,8 @@
 from typing import List, Dict, Any
 from models import Email
 
+TASK_IDS = ["easy", "medium", "hard"]
+
 def get_easy_task():
     return [
         Email(id="e1", sender="customer@buy.com", subject="Pricing inquiry", body="How much does the enterprise tier cost?"),
@@ -31,48 +33,74 @@ def get_hard_task():
         Email(id="h10", sender="phish@fake.com", subject="Reset password", body="Your IT admin asks you to reset your password here: http://fake.com")
     ]
 
+
+def _clamp(score: float) -> float:
+    """Ensure score is strictly between 0 and 1 (exclusive) by clamping to [0.05, 0.95]."""
+    return round(min(max(score, 0.05), 0.95), 4)
+
+
 def grade_easy(routed: Dict[str, str], replies: Dict[str, str], spam: set) -> float:
-    score = 0.0
+    """
+    3 emails to route correctly: e1->sales, e2->hr, e3->support.
+    Each correct route = 0.3 points, plus a 0.05 base so score is never 0.
+    Max achievable: 0.95 (all correct). Min: 0.05 (nothing correct).
+    """
     expected = {"e1": "sales", "e2": "hr", "e3": "support"}
-    for eid, folder in expected.items():
-        if routed.get(eid) == folder:
-            score += 1.0
-    return score / len(expected)
+    correct = sum(1 for eid, folder in expected.items() if routed.get(eid) == folder)
+    # Base of 0.05 ensures score > 0.0; cap of 0.95 per 3/3 ensures score < 1.0
+    raw = 0.05 + (correct / len(expected)) * 0.90
+    return _clamp(raw)
+
 
 def grade_medium(routed: Dict[str, str], replies: Dict[str, str], spam: set) -> float:
-    score = 0.0
+    """
+    5 emails: route m3/m4/m5, mark m1 as spam, reply to m2.
+    Each component worth 0.18 points, plus base 0.10.
+    Max: 0.10 + 5*0.18 = 1.0 -> clamped to 0.95. Min: 0.10.
+    """
+    score = 0.10  # base
+
     expected_route = {"m3": "hr", "m4": "sales", "m5": "support"}
-    
-    # Check routes
-    routes_correct = sum(1 for eid, f in expected_route.items() if routed.get(eid) == f)
-    score += routes_correct * 0.2
-    
-    # Check spam
+    for eid, f in expected_route.items():
+        if routed.get(eid) == f:
+            score += 0.17
+
     if "m1" in spam:
-        score += 0.2
-        
-    # Check reply
+        score += 0.17
+
     if "m2" in replies and len(replies["m2"]) > 5:
-        score += 0.2
-        
-    return min(max(score, 0.0), 1.0)
+        score += 0.17
+
+    return _clamp(score)
+
 
 def grade_hard(routed: Dict[str, str], replies: Dict[str, str], spam: set) -> float:
-    score = 0.0
-    
+    """
+    10 emails: identify 3 spam, route 4 emails correctly, reply to VIP (h3).
+    Spread across 0.05–0.95 range using partial credit.
+    """
+    score = 0.05  # base
+
+    # Spam detection: 3 expected, each worth 0.08
     expected_spam = {"h1", "h5", "h10"}
     correct_spam = len(spam.intersection(expected_spam))
-    score += correct_spam * 0.1
-    
+    score += correct_spam * 0.08
+
+    # False positive penalty (marking non-spam as spam): -0.03 each
+    false_positives = len(spam - expected_spam)
+    score -= false_positives * 0.03
+
+    # Routing: 4 expected, each worth 0.10
     expected_route = {"h4": "hr", "h6": "support", "h8": "sales", "h9": "support"}
     routes_correct = sum(1 for eid, f in expected_route.items() if routed.get(eid) == f)
-    score += routes_correct * 0.1
-    
-    # Reply to VIP client (MegaCorp)
+    score += routes_correct * 0.10
+
+    # VIP reply bonus: 0.30
     if "h3" in replies and len(replies["h3"]) > 10:
-        score += 0.3
-        
-    return min(max(score, 0.0), 1.0)
+        score += 0.30
+
+    return _clamp(score)
+
 
 def get_task_data(task_id: str):
     if task_id == "easy":

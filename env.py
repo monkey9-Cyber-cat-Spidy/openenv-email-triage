@@ -6,7 +6,7 @@ from openenv.core.env_server.interfaces import Environment
 from openenv.core.env_server.types import State
 
 from models import EmailTriageAction, EmailTriageObservation, Email
-from tasks import get_task_data
+from tasks import get_task_data, TASK_IDS
 
 class EmailTriageEnvironment(Environment):
     SUPPORTS_CONCURRENT_SESSIONS = True
@@ -26,7 +26,11 @@ class EmailTriageEnvironment(Environment):
     def reset(self, seed: int = None, episode_id: str = None, **kwargs) -> EmailTriageObservation:
         self._state = State(episode_id=episode_id or str(uuid.uuid4()), step_count=0)
         # We allow overriding the task via kwargs (used by openenv internally) or env var
-        self.task_name = kwargs.get("task_name", os.getenv("EMAIL_TASK", "easy"))
+        # Accept task_name or task_id (different evaluators use different kwarg names)
+        self.task_name = kwargs.get("task_name", kwargs.get("task_id", os.getenv("EMAIL_TASK", "easy")))
+        # Validate task name; fall back to 'easy' if unknown
+        if self.task_name not in TASK_IDS:
+            self.task_name = "easy"
         
         emails_list, self.grader = get_task_data(self.task_name)
         
@@ -71,7 +75,7 @@ class EmailTriageEnvironment(Environment):
             if action.email_id in self.inbox and action.reply_text:
                 self.replies[action.email_id] = action.reply_text
                 del self.inbox[action.email_id]
-                reward = 1.0  # Encourage replies
+                reward = 0.5  # Encourage replies (capped to keep step reward < 1.0)
                 status = f"Replied to {action.email_id}"
             else:
                 reward = -0.1
