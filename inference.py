@@ -1,3 +1,16 @@
+#!/usr/bin/env python3
+"""
+OpenEnv Email Triage — Inference Script
+
+Runs the agent against all 3 tasks (easy, medium, hard) and emits structured
+stdout logs in the [START] / [STEP] / [END] format required by the hackathon.
+
+Required env vars:
+    API_BASE_URL  — LLM endpoint (e.g. https://router.huggingface.co/v1)
+    MODEL_NAME    — Model identifier (e.g. Qwen/Qwen2.5-72B-Instruct)
+    HF_TOKEN      — Hugging Face API token (used as the API key)
+"""
+
 import os
 import json
 import textwrap
@@ -5,131 +18,118 @@ from openai import OpenAI
 
 from env import EmailTriageEnvironment
 from models import EmailTriageAction
+from tasks import TASK_IDS
 
-# Mandatory Variables
-API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4.1-mini")
-HF_TOKEN = os.getenv("HF_TOKEN", os.getenv("API_KEY"))
+# ── Mandatory environment variables ─────────────────────────────────────────
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME   = os.getenv("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
+HF_TOKEN     = os.getenv("HF_TOKEN",     os.getenv("API_KEY", ""))
 
 if not HF_TOKEN:
-    # Use a dummy for dry-run testing if HF_TOKEN missing locally, 
-    # but the instructions state it's mandatory. We raise to follow strict rules.
     raise ValueError("HF_TOKEN environment variable is required")
 
-# Environment vars mapped to variables
-TASK_NAME = os.getenv("EMAIL_TASK", "easy")
-BENCHMARK = "email_triage"
-MAX_STEPS = 15
-TEMPERATURE = 0.7
+# ── Config ───────────────────────────────────────────────────────────────────
+BENCHMARK   = "email_triage"
+MAX_STEPS   = 15
+TEMPERATURE = 0.2
 
-SYSTEM_PROMPT = textwrap.dedent(
-    """
+SYSTEM_PROMPT = textwrap.dedent("""
     You are an AI Email Triage agent.
     Your objective is to route emails to the correct folder ('sales', 'support', 'hr'),
     reply to emails that request it with helpful information, and mark obvious spam.
-    
-    You must output exactly one JSON object representing your action each turn, matching this schema:
+
+    You must output exactly one JSON object per turn matching this schema:
     {
       "action_type": "route" | "reply" | "mark_spam" | "submit",
-      "email_id": "id_of_the_email",
-      "folder": "destination_folder_name_if_routing",
-      "reply_text": "text_of_your_reply_if_replying"
+      "email_id":    "id_of_the_email",
+      "folder":      "destination_folder_if_routing",
+      "reply_text":  "text_of_reply_if_replying"
     }
-    
-    Once the inbox is empty, or you are done, output '{"action_type": "submit"}' to finish.
-    """
-).strip()
 
+    Once the inbox is empty or you are done, output {"action_type": "submit"}.
+""").strip()
+
+# ── Log helpers ───────────────────────────────────────────────────────────────
 def log_start(task: str, env: str, model: str) -> None:
     print(f"[START] task={task} env={env} model={model}", flush=True)
 
-def log_step(step: int, action: str, reward: float, done: bool, error: str) -> None:
-    error_val = error if error else "null"
-    done_val = str(done).lower()
-    print(
-        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
-        flush=True,
-    )
+def log_step(step: int, action: str, reward: float, done: bool, error) -> None:
+    err  = error if error else "null"
+    done_s = str(done).lower()
+    print(f"[STEP] step={step} action={action} reward={reward:.2f} done={done_s} error={err}",
+          flush=True)
 
 def log_end(success: bool, steps: int, score: float, rewards: list) -> None:
-    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    success_val = str(success).lower()
-    print(f"[END] success={success_val} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
+    rewards_s  = ",".join(f"{r:.2f}" for r in rewards)
+    success_s  = str(success).lower()
+    print(f"[END] success={success_s} steps={steps} score={score:.2f} rewards={rewards_s}",
+          flush=True)
 
-def build_user_prompt(obs_dict):
-    return f"Observation: {json.dumps(obs_dict, indent=2)}\n\nWhat is your next action?"
-
-def main():
-    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
-    env = EmailTriageEnvironment()
-    
-    history = []
+# ── Single-task episode ───────────────────────────────────────────────────────
+def run_task(client: OpenAI, task_name: str) -> None:
+    env     = EmailTriageEnvironment()
     rewards = []
     steps_taken = 0
-    score = 0.0
+    score   = 0.0
     success = False
 
-    log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
+    log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
 
     try:
-        # Pass the task directly so local environment picks it up
-        obs = env.reset(task_name=TASK_NAME)
+        obs = env.reset(task_name=task_name)
+        history: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
 
         for step in range(1, MAX_STEPS + 1):
             if obs.done:
                 break
-                
+
             obs_dict = {
-                "inbox": [{"id": e.id, "subject": e.subject, "body": e.body} for e in obs.inbox],
-                "folders": obs.folders,
-                "history": obs.last_action_status
+                "inbox":   [{"id": e.id, "subject": e.subject, "body": e.body}
+                             for e in obs.inbox],
+                "folders":  obs.folders,
+                "status":   obs.last_action_status,
             }
-            
-            user_prompt = build_user_prompt(obs_dict)
-            
+            history.append({"role": "user",
+                             "content": f"Observation:\n{json.dumps(obs_dict, indent=2)}\n\nNext action?"})
+
             try:
-                completion = client.chat.completions.create(
+                resp = client.chat.completions.create(
                     model=MODEL_NAME,
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ],
+                    messages=history,
                     temperature=TEMPERATURE,
-                    response_format={"type": "json_object"}
+                    response_format={"type": "json_object"},
                 )
-                action_text = (completion.choices[0].message.content or "{}").strip()
+                action_text = (resp.choices[0].message.content or "{}").strip()
+                history.append({"role": "assistant", "content": action_text})
                 action_data = json.loads(action_text)
                 action = EmailTriageAction(**action_data)
-                
+
             except Exception as exc:
-                # Malformed action or API error
-                error = str(exc)
-                obs = env.step(EmailTriageAction(action_type="submit"))
-                rewards.append(0.0)
+                err_msg = str(exc)[:120]
+                action  = EmailTriageAction(action_type="submit")
+                obs     = env.step(action)
+                rewards.append(float(obs.reward or 0.0))
                 steps_taken = step
-                log_step(step=step, action="error", reward=0.0, done=True, error=error)
+                log_step(step=step, action="error", reward=float(obs.reward or 0.0),
+                         done=True, error=err_msg)
                 break
 
-            # Execute step in environment
             obs = env.step(action)
-            
-            reward = obs.reward or 0.0
-            done = obs.done
-            error = None
-
+            reward = float(obs.reward or 0.0)
+            done   = obs.done
             rewards.append(reward)
             steps_taken = step
 
-            action_clean = json.dumps(action_data)
-            log_step(step=step, action=action_clean, reward=reward, done=done, error=error)
+            log_step(step=step, action=json.dumps(action_data),
+                     reward=reward, done=done, error=None)
 
             if done:
-                # Final score injected via observe metadata
                 score = float(obs.metadata.get("score", 0.0))
                 break
 
-        score = min(max(score, 0.0), 1.0)
-        success = score >= 0.5  # Considered success if >= 0.5
+        # Clamp score strictly inside (0, 1)
+        score   = round(min(max(score, 0.05), 0.95), 4)
+        success = score >= 0.5
 
     finally:
         try:
@@ -137,6 +137,15 @@ def main():
         except Exception:
             pass
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+def main() -> None:
+    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+    # Run all tasks — evaluator expects one [START]..[END] block per task
+    for task_name in TASK_IDS:          # ["easy", "medium", "hard"]
+        run_task(client, task_name)
+
 
 if __name__ == "__main__":
     main()
