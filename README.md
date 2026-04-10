@@ -7,65 +7,162 @@ sdk: docker
 pinned: false
 ---
 
-# Email Triage OpenEnv Environment
+# 📧 Email Triage — OpenEnv Environment
+
+> **Meta PyTorch Hackathon × Scaler School of Technology**
+> An original multi-task reinforcement learning environment for evaluating LLM email triage agents.
+
+---
 
 ## Environment Overview and Motivation
-This environment simulates a real-world task performed by knowledge workers every day: **Email Triage**.
-Users must sort incoming emails into predefined folders (Sales, Support, HR) and provide meaningful replies to urgent or specific requests, while ignoring and marking explicit spam. The motivation is to test an LLM's capability to understand context, route appropriately, identify malicious content, and formulate professional replies based on surrounding text.
+
+**Email Triage** is a universal, high-frequency knowledge-worker task. Every professional triages email daily — routing messages, flagging spam, and composing context-aware replies. Yet no standardised RL environment exists for this task.
+
+This environment tests an LLM agent's ability to:
+- **Understand context** — distinguish sales enquiries from HR notices from support tickets
+- **Detect malice** — identify spam/phishing from realistic email patterns
+- **Compose replies** — generate professional responses under time pressure
+- **Prioritise** — handle VIP clients and urgent escalations before routine mail
+
+The environment is fully original and purpose-built for this hackathon. It is not derived from any existing OpenEnv sample or public repository.
+
+---
 
 ## Action and Observation Spaces
 
 ### Observation Space
-The observation space is a JSON representation containing:
-- `inbox`: A list of emails presently in the inbox. Each email contains:
-  - `id`: Unique string identifier
-  - `sender`: Email address of the sender
-  - `subject`: Email subject
-  - `body`: Body text of the email
-- `folders`: A list of available routing folders (e.g., `["sales", "support", "hr"]`)
-- `last_action_status`: A text status output indicating the result of the prior action.
+Each observation is a JSON object containing:
+| Field | Type | Description |
+|---|---|---|
+| `inbox` | list | Emails remaining to process. Each has `id`, `sender`, `subject`, `body` |
+| `folders` | list | Available routing folders: `["sales", "support", "hr"]` |
+| `last_action_status` | str | Result of the previous action (feedback for the agent) |
 
 ### Action Space
-The agent produces a single JSON object corresponding to this structure:
-- `action_type`: One of `"route"`, `"reply"`, `"mark_spam"`, or `"submit"`.
-- `email_id`: The ID of the targeted email.
-- `folder`: The destination folder (required for `"route"`).
-- `reply_text`: The body of the reply (required for `"reply"`).
+The agent emits one JSON object per step:
+| Field | Values | Required for |
+|---|---|---|
+| `action_type` | `"route"` / `"reply"` / `"mark_spam"` / `"submit"` | always |
+| `email_id` | email ID string | route, reply, mark_spam |
+| `folder` | `"sales"` / `"support"` / `"hr"` | route only |
+| `reply_text` | string | reply only |
 
-## Task Descriptions
+---
 
-1. **Easy Task (`task=easy`)**
-   - **Difficulty:** Easy
-   - **Description:** Route 3 clearly delineated emails into the Sales, HR, and Support folders. All signals are distinct and obvious.
+## Tasks
 
-2. **Medium Task (`task=medium`)**
-   - **Difficulty:** Medium
-   - **Description:** Route 5 emails. The agent must identify 1 spam email and mark it accordingly. The agent must also identify an urgent ticket and issue a reply rather than just routing.
+### Easy (`task_id=easy`)
+- **3 emails**, clearly categorised by subject and body
+- Expected: route e1→sales, e2→hr, e3→support
+- **Grader:** `0.05 + (correct_routes / 3) × 0.90` → range `[0.05, 0.95]`
 
-3. **Hard Task (`task=hard`)**
-   - **Difficulty:** Hard
-   - **Description:** Route 10 emails with overlapping terminology. Multiple spam pieces must be identified. The agent must reply to a VIP client whose details are hidden in a secondary email thread within the inbox.
+### Medium (`task_id=medium`)
+- **5 emails**: routing + spam detection + reply required
+- Expected: route m3/m4/m5, mark m1 as spam, reply to urgent ticket m2
+- **Grader:** partial credit per component, base 0.10 → range `[0.10, 0.95]`
 
-## Setup and Usage Instructions
+### Hard (`task_id=hard`)
+- **10 emails**: multiple spam, overlapping domains, VIP hidden in context
+- Expected: 3 spam detected, 4 routes correct, VIP client reply
+- **Grader:** spam +0.08 each, routes +0.10 each, VIP reply +0.30 → range `[0.05, 0.95]`
 
-### Docker Execution
-To run via Docker (as expected on Hugging Face Spaces):
+All graders return **partial credit** — every correct action earns reward, enabling meaningful RL training signal across the full difficulty spectrum.
+
+---
+
+## Reward Structure
+
+Rewards are returned at every step (not just episode end), providing a dense training signal:
+
+| Action | Reward |
+|---|---|
+| Correct route | +0.20 |
+| Correct spam | +0.10 |
+| Reply to email needing reply | +0.15 |
+| Wrong route | −0.05 |
+| False positive spam | −0.10 |
+| Submit | Final grader score applied |
+
+Final episode score is always in **(0.0, 1.0)** exclusive — never exactly 0 or 1.
+
+---
+
+## Setup and Usage
+
+### Run on Hugging Face Spaces
+The environment is live at: https://huggingface.co/spaces/Monkeysaur/openenv-email-triage
+
+```bash
+# Reset (start a new episode)
+curl -X POST https://monkeysaur-openenv-email-triage.hf.space/reset \
+     -H "Content-Type: application/json" \
+     -d '{"task_id": "easy"}'
+
+# Step (take an action)
+curl -X POST https://monkeysaur-openenv-email-triage.hf.space/step \
+     -H "Content-Type: application/json" \
+     -d '{"action": {"action_type": "route", "email_id": "e1", "folder": "sales"}}'
+
+# List available tasks
+curl https://monkeysaur-openenv-email-triage.hf.space/tasks
+```
+
+### Run with Docker locally
 ```bash
 docker build -t openenv-email-triage .
 docker run -p 7860:7860 openenv-email-triage
 ```
 
-### Local Execution
-To run the baseline locally:
+### Run the baseline inference script
 ```bash
 pip install -r requirements.txt
-export HF_TOKEN="your_token"
-export EMAIL_TASK="easy" # Change to 'medium' or 'hard' to run different tasks
+export API_BASE_URL="https://router.huggingface.co/v1"
+export MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
+export HF_TOKEN="your_hf_token"
 python inference.py
 ```
 
-## Baseline Performance Scores
-Baseline runs using `gpt-4o-mini` consistently yield the following scores:
-- **Easy**: 1.00 score
-- **Medium**: 1.00 score 
-- **Hard**: 0.8+ score (Depending on reply specificity logic)
+The script runs all 3 tasks sequentially and emits structured logs:
+```
+[START] task=easy env=email_triage model=Qwen/Qwen2.5-72B-Instruct
+[STEP] step=1 action={"action_type":"route","email_id":"e1","folder":"sales"} reward=0.20 done=false error=null
+[STEP] step=2 ...
+[END] success=true steps=3 score=0.65 rewards=0.20,0.20,0.25
+```
+
+---
+
+## Baseline Performance (Qwen2.5-72B-Instruct)
+
+| Task | Typical Score | Notes |
+|---|---|---|
+| Easy | 0.65 – 0.95 | Routing is straightforward |
+| Medium | 0.44 – 0.78 | Spam + reply together trips weaker models |
+| Hard | 0.13 – 0.69 | VIP context reasoning is the bottleneck |
+
+Scores vary between runs due to LLM temperature, but graders are fully deterministic.
+
+---
+
+## API Endpoints
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/reset` | POST | Start a new episode (accepts `task_id`) |
+| `/step` | POST | Execute one action |
+| `/state` | GET | Get current environment state |
+| `/tasks` | GET | List available task IDs |
+| `/health` | GET | Health check |
+| `/schema` | GET | Action/observation JSON schemas |
+| `/metadata` | GET | Environment metadata |
+| `/ws` | WebSocket | Persistent session endpoint |
+
+---
+
+## Environment Variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `API_BASE_URL` | Yes | LLM API endpoint |
+| `MODEL_NAME` | Yes | Model identifier |
+| `HF_TOKEN` | Yes | Hugging Face API key |
